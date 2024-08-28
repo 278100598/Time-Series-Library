@@ -15,6 +15,84 @@ from utils.augmentation import run_augmentation_single
 
 warnings.filterwarnings('ignore')
 
+class Dataset_ORAN(Dataset):
+    def __init__(self, args, root_path, flag='train', size=None,
+                 features='S', data_path='ETTh1.csv',
+                 target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None):
+        # size [seq_len, label_len, pred_len]
+        self.args = args
+        # info
+        if size == None:
+            self.seq_len = 24 * 4 * 4
+            self.label_len = 24 * 4
+            self.pred_len = 24 * 4
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+        # init
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+
+        self.root_path = root_path
+        self.data_path = data_path
+        
+        bs, ns = get_ue_slice(data_path)
+        self.datasets = get_oran_dataset(self.seq_len, self.pred_len, bs, ns)
+        self.dataset = self.datasets[int(data_path)][self.set_type]
+        
+        self.__read_data__()
+
+    def __read_data__(self):
+
+
+        df_stamp = pd.DataFrame({'date':[x['timestamp'] for x in self.dataset]})
+        df_stamp = pd.DataFrame({'date':pd.date_range(start=df_stamp.iloc[0]['date'], periods=self.seq_len+self.pred_len+len(self.dataset), freq='250ms')})
+        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        self.time_stamp = df_stamp['date']
+        if self.timeenc == 0:
+            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
+            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
+            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
+            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+            data_stamp = df_stamp.drop(['date'], 1).values
+        elif self.timeenc == 1:
+            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0) 
+
+        self.data_x = np.array([np.array(x['past_values']) for x in self.dataset])
+        self.data_y = np.array([np.array(x['future_values'][[0]]) for x in self.dataset])
+
+        if self.set_type == 0 and self.args.augmentation_ratio > 0:
+            self.data_x, self.data_y, augmentation_tags = run_augmentation_single(self.data_x, self.data_y, self.args)
+            
+        self.data_stamp = data_stamp
+
+    def __getitem__(self, index):
+        
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end
+        r_end = r_begin + self.pred_len
+
+        seq_x_mark = self.data_stamp[s_begin:s_end]
+        seq_y_mark = self.data_stamp[r_begin:r_end]
+        
+        #print(self.data_x[index].shape, self.data_y[index].shape, seq_x_mark.shape, seq_y_mark.shape)
+        return self.data_x[index], self.data_y[index], seq_x_mark, seq_y_mark
+
+    def __len__(self):
+        return len(self.data_x)
+
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
 
 class Dataset_ETT_hour(Dataset):
     def __init__(self, args, root_path, flag='train', size=None,
